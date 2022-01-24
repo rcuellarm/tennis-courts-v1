@@ -17,11 +17,12 @@ public class ReservationService {
     private final ReservationMapper reservationMapper;
 
     public ReservationDTO bookReservation(CreateReservationRequestDTO createReservationRequestDTO) {
-        throw new UnsupportedOperationException();
+        return reservationMapper.map(reservationRepository
+                .saveAndFlush(reservationMapper.map(createReservationRequestDTO)));
     }
 
     public ReservationDTO findReservation(Long reservationId) {
-        return reservationRepository.findById(reservationId).map(reservationMapper::map).orElseThrow(() -> {
+        return reservationRepository.findById(reservationId).map(reservationMapper::map).<EntityNotFoundException>orElseThrow(() -> {
             throw new EntityNotFoundException("Reservation not found.");
         });
     }
@@ -38,7 +39,7 @@ public class ReservationService {
             BigDecimal refundValue = getRefundValue(reservation);
             return this.updateReservation(reservation, refundValue, ReservationStatus.CANCELLED);
 
-        }).orElseThrow(() -> {
+        }).<EntityNotFoundException>orElseThrow(() -> {
             throw new EntityNotFoundException("Reservation not found.");
         });
     }
@@ -74,18 +75,23 @@ public class ReservationService {
     /*TODO: This method actually not fully working, find a way to fix the issue when it's throwing the error:
             "Cannot reschedule to the same slot.*/
     public ReservationDTO rescheduleReservation(Long previousReservationId, Long scheduleId) {
-        Reservation previousReservation = cancel(previousReservationId);
-
-        if (scheduleId.equals(previousReservation.getSchedule().getId())) {
-            throw new IllegalArgumentException("Cannot reschedule to the same slot.");
-        }
-
-        previousReservation.setReservationStatus(ReservationStatus.RESCHEDULED);
-        reservationRepository.save(previousReservation);
+        Reservation previousReservation = reservationRepository.findById(previousReservationId).map(reservation -> {
+            if (scheduleId.equals(reservation.getSchedule().getId())) {
+                throw new IllegalArgumentException("Cannot reschedule to the same slot.");
+            }
+            BigDecimal refundValue = getRefundValue(reservation);
+            reservation.setValue(reservation.getValue().subtract(refundValue));
+            reservation.setRefundValue(refundValue);
+            reservation.setReservationStatus(ReservationStatus.RESCHEDULED);
+            return reservationRepository.save(reservation);
+        }).<EntityNotFoundException>orElseThrow(() -> {
+            throw new EntityNotFoundException("Reservation not found.");
+        });
 
         ReservationDTO newReservation = bookReservation(CreateReservationRequestDTO.builder()
                 .guestId(previousReservation.getGuest().getId())
                 .scheduleId(scheduleId)
+                .value(previousReservation.getRefundValue())
                 .build());
         newReservation.setPreviousReservation(reservationMapper.map(previousReservation));
         return newReservation;
